@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "402738598394",
+    "project_id": "sirr-fb97f",
+    "storage_bucket": "sirr-fb97f.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:402738598394:android:c3e55d0bbc59f90e6b1443",
+        "android_client_info": {
+          "package_name": "com.example.sirr"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA2EhqvmdQ6nJ7fFthW9yhtBD9sT55qVRw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
