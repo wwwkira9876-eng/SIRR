@@ -2,8 +2,34 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
-      allow read, write: if false;
+
+    match /secrets/{secretId} {
+      // إنشاء رسالة جديدة فقط
+      allow create: if
+        secretId.matches('^[0-9a-f]{64}$') &&
+        request.resource.data.keys().hasAll([
+          'message', 'createdAt', 'expiresAt'
+        ]) &&
+        request.resource.data.keys().hasOnly([
+          'message', 'createdAt', 'expiresAt'
+        ]) &&
+        request.resource.data.message is string &&
+        request.resource.data.message.size() > 0 &&
+        request.resource.data.message.size() <= 3000 &&
+        request.resource.data.createdAt == request.time &&
+        request.resource.data.expiresAt is timestamp &&
+        request.resource.data.expiresAt > request.time &&
+        request.resource.data.expiresAt <=
+          request.time + duration.value(24, 'h');
+
+      // قراءة رسالة معروفة الرمز وغير منتهية
+      allow get: if
+        secretId.matches('^[0-9a-f]{64}$') &&
+        resource.data.expiresAt is timestamp &&
+        resource.data.expiresAt > request.time;
+
+      // منع عرض الرسائل أو تعديلها أو حذفها
+      allow list, update, delete: if false;
     }
   }
 }

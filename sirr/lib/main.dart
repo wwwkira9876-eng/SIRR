@@ -1,14 +1,18 @@
 import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:cloud_functions/cloud_functions.dart';
+
+import 'dart:convert';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:crypto/crypto.dart';
+
 import 'firebase_options.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(const SIRRApp());
 }
 
@@ -36,8 +40,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage>
-    with TickerProviderStateMixin {
+class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   final codeController = TextEditingController();
   late final AnimationController animation;
 
@@ -57,26 +60,41 @@ class _HomePageState extends State<HomePage>
     super.dispose();
   }
 
-
   Future<void> openMessage() async {
     final code = codeController.text.trim();
 
     if (code.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('اكتب الرمز أولاً')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('اكتب الرمز أولاً')));
       return;
     }
 
     try {
-      final callable = FirebaseFunctions.instanceFor(
-        region: 'asia-east1',
-      ).httpsCallable('readSecret');
-
-      final result = await callable.call({'code': code});
-      final data = Map<String, dynamic>.from(result.data);
+      final id = sha256.convert(utf8.encode(code)).toString();
+      final snap = await FirebaseFirestore.instance
+          .collection('secrets')
+          .doc(id)
+          .get();
 
       if (!mounted) return;
+
+      if (!snap.exists) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('الرمز غير صحيح أو غير موجود')),
+        );
+        return;
+      }
+
+      final data = snap.data()!;
+      final expiresAt = data['expiresAt'];
+
+      if (expiresAt is! Timestamp ||
+          !expiresAt.toDate().isAfter(DateTime.now())) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('انتهت صلاحية هذه الرسالة')),
+        );
+        return;
+      }
 
       showDialog(
         context: context,
@@ -91,10 +109,7 @@ class _HomePageState extends State<HomePage>
             child: Text(
               data['message']?.toString() ?? '',
               textDirection: TextDirection.rtl,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 17,
-              ),
+              style: const TextStyle(color: Colors.white, fontSize: 17),
             ),
           ),
           actions: [
@@ -105,16 +120,15 @@ class _HomePageState extends State<HomePage>
           ],
         ),
       );
-    } on FirebaseFunctionsException catch (e) {
+    } on FirebaseException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message ?? 'تعذر فتح الرسالة')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(e.message ?? 'تعذر فتح الرسالة')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('حدث خطأ في الاتصال')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('حدث خطأ في الاتصال')));
     }
   }
 
@@ -137,16 +151,13 @@ class _HomePageState extends State<HomePage>
             content: TextField(
               controller: controller,
               maxLines: 5,
+              maxLength: 3000,
               textDirection: TextDirection.rtl,
-              decoration: const InputDecoration(
-                hintText: 'اكتب رسالتك هنا...',
-              ),
+              decoration: const InputDecoration(hintText: 'اكتب رسالتك هنا...'),
             ),
             actions: [
               TextButton(
-                onPressed: sending
-                    ? null
-                    : () => Navigator.pop(dialogContext),
+                onPressed: sending ? null : () => Navigator.pop(dialogContext),
                 child: const Text('إغلاق'),
               ),
               ElevatedButton(
@@ -157,9 +168,7 @@ class _HomePageState extends State<HomePage>
 
                         if (message.isEmpty) {
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('اكتب الرسالة أولاً'),
-                            ),
+                            const SnackBar(content: Text('اكتب الرسالة أولاً')),
                           );
                           return;
                         }
@@ -167,17 +176,30 @@ class _HomePageState extends State<HomePage>
                         setDialogState(() => sending = true);
 
                         try {
-                          final callable = FirebaseFunctions.instanceFor(
-                            region: 'asia-east1',
-                          ).httpsCallable('createSecret');
+                          final random = math.Random.secure();
+                          final bytes = List<int>.generate(
+                            24,
+                            (_) => random.nextInt(256),
+                          );
+                          final code = base64Url
+                              .encode(bytes)
+                              .replaceAll('=', '');
+                          final id = sha256
+                              .convert(utf8.encode(code))
+                              .toString();
 
-                          final result = await callable.call({
-                            'message': message,
-                          });
+                          final expiresAt = Timestamp.fromDate(
+                            DateTime.now().add(const Duration(hours: 24)),
+                          );
 
-                          final data =
-                              Map<String, dynamic>.from(result.data);
-                          final code = data['code'].toString();
+                          await FirebaseFirestore.instance
+                              .collection('secrets')
+                              .doc(id)
+                              .set({
+                                'message': message,
+                                'createdAt': FieldValue.serverTimestamp(),
+                                'expiresAt': expiresAt,
+                              });
 
                           if (!mounted) return;
 
@@ -221,14 +243,14 @@ class _HomePageState extends State<HomePage>
                               ),
                               actions: [
                                 TextButton(
-                                  onPressed: () =>
-                                      Navigator.pop(resultContext),
+                                  onPressed: () => Navigator.pop(resultContext),
                                   child: const Text('حسناً'),
                                 ),
                               ],
                             ),
                           );
-                        } on FirebaseFunctionsException catch (e) {
+                        } on FirebaseException catch (e) {
+                          if (!mounted) return;
                           setDialogState(() => sending = false);
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
@@ -236,11 +258,10 @@ class _HomePageState extends State<HomePage>
                             ),
                           );
                         } catch (e) {
+                          if (!mounted) return;
                           setDialogState(() => sending = false);
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('حدث خطأ في الاتصال'),
-                            ),
+                            const SnackBar(content: Text('حدث خطأ في الاتصال')),
                           );
                         }
                       },
@@ -273,22 +294,11 @@ class _HomePageState extends State<HomePage>
       body: Stack(
         children: [
           const Positioned.fill(child: StarBackground()),
-          Positioned(
-            top: -100,
-            left: -70,
-            child: glow(230, purple),
-          ),
-          Positioned(
-            bottom: -120,
-            right: -70,
-            child: glow(260, pink),
-          ),
+          Positioned(top: -100, left: -70, child: glow(230, purple)),
+          Positioned(bottom: -120, right: -70, child: glow(260, pink)),
           SafeArea(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 25,
-                vertical: 20,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 25, vertical: 20),
               child: Column(
                 children: [
                   const SizedBox(height: 20),
@@ -299,19 +309,14 @@ class _HomePageState extends State<HomePage>
                       fontWeight: FontWeight.w300,
                       letterSpacing: 8,
                       color: Colors.white,
-                      shadows: [
-                        Shadow(color: pink, blurRadius: 25),
-                      ],
+                      shadows: [Shadow(color: pink, blurRadius: 25)],
                     ),
                   ),
                   const SizedBox(height: 8),
                   const Text(
                     'بعض الأسرار تستحق أن تبقى بين قلبين',
                     textDirection: TextDirection.rtl,
-                    style: TextStyle(
-                      color: Colors.white60,
-                      fontSize: 13,
-                    ),
+                    style: TextStyle(color: Colors.white60, fontSize: 13),
                   ),
                   const SizedBox(height: 35),
                   AnimatedBuilder(
@@ -329,9 +334,7 @@ class _HomePageState extends State<HomePage>
                               Color(0xFF251022),
                             ],
                           ),
-                          border: Border.all(
-                            color: pink.withOpacity(0.35),
-                          ),
+                          border: Border.all(color: pink.withOpacity(0.35)),
                           boxShadow: [
                             BoxShadow(
                               color: pink.withOpacity(
@@ -411,16 +414,11 @@ class _HomePageState extends State<HomePage>
                       fillColor: Colors.white.withOpacity(0.05),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(16),
-                        borderSide: BorderSide(
-                          color: purple.withOpacity(0.5),
-                        ),
+                        borderSide: BorderSide(color: purple.withOpacity(0.5)),
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(16),
-                        borderSide: const BorderSide(
-                          color: pink,
-                          width: 1.5,
-                        ),
+                        borderSide: const BorderSide(color: pink, width: 1.5),
                       ),
                     ),
                   ),
@@ -498,18 +496,14 @@ class StarBackground extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return CustomPaint(
-      painter: StarPainter(),
-      child: const SizedBox.expand(),
-    );
+    return CustomPaint(painter: StarPainter(), child: const SizedBox.expand());
   }
 }
 
 class StarPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white.withOpacity(0.35);
+    final paint = Paint()..color = Colors.white.withOpacity(0.35);
     final random = math.Random(12);
 
     for (int i = 0; i < 65; i++) {
@@ -552,10 +546,7 @@ class CatPainter extends CustomPainter {
       ..quadraticBezierTo(-34, -38, -24, -48);
     canvas.drawPath(tail, outline);
 
-    canvas.drawOval(
-      const Rect.fromLTWH(-22, -32, 40, 25),
-      p,
-    );
+    canvas.drawOval(const Rect.fromLTWH(-22, -32, 40, 25), p);
 
     canvas.drawCircle(const Offset(12, -36), 15, p);
 
@@ -579,17 +570,9 @@ class CatPainter extends CustomPainter {
     canvas.drawCircle(const Offset(18, -37), 1.8, eye);
     canvas.drawCircle(const Offset(13, -31), 1.5, eye);
 
-    canvas.drawLine(
-      const Offset(-12, -12),
-      Offset(-12, -2 + bounce),
-      outline,
-    );
+    canvas.drawLine(const Offset(-12, -12), Offset(-12, -2 + bounce), outline);
 
-    canvas.drawLine(
-      const Offset(8, -12),
-      Offset(8, -2 - bounce),
-      outline,
-    );
+    canvas.drawLine(const Offset(8, -12), Offset(8, -2 - bounce), outline);
 
     if (progress > 0.55 && progress < 0.95) {
       final heart = Path()
